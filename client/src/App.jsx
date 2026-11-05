@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 
+// Render URL / লোকাল খালি — ট্রেইলিং স্ল্যাশ বাদ
+const API_BASE = (import.meta.env.VITE_API_BASE || '').replace(/\/+$/, '');
+
 const TYPES = [
   { value: 'auto', label: 'Auto detect' },
   { value: 'direct', label: 'Direct video (MP4 / WebM / OGG)' },
@@ -17,7 +20,10 @@ const detectType = (u) => {
 };
 
 const relayUrl = (url, ref, kind) =>
-  `/api/proxy?url=${encodeURIComponent(url)}${ref ? `&ref=${encodeURIComponent(ref)}` : ''}${kind ? `&kind=${kind}` : ''}`;
+  `${API_BASE}/api/proxy?url=${encodeURIComponent(url)}${ref ? `&ref=${encodeURIComponent(ref)}` : ''}${kind ? `&kind=${kind}` : ''}`;
+
+const playlistUrl = (url, ref) =>
+  `${API_BASE}/api/playlist?url=${encodeURIComponent(url)}${ref ? `&ref=${encodeURIComponent(ref)}` : ''}`;
 
 function Player({ src, type, onError }) {
   const videoRef = useRef(null);
@@ -34,7 +40,12 @@ function Player({ src, type, onError }) {
         if (dead) return;
         if (Hls.isSupported()) {
           hls = new Hls();
-          hls.on(Hls.Events.ERROR, (_, d) => d.fatal && errRef.current(`HLS error: ${d.details}`));
+          hls.on(Hls.Events.ERROR, (_, d) => {
+            if (!d.fatal) return;
+            const code = d.response?.code ? ` (HTTP ${d.response.code})` : '';
+            const url = d.url ? ` @ ${d.url}` : '';
+            errRef.current(`HLS error: ${d.details}${code}${url}`);
+          });
           hls.loadSource(src);
           hls.attachMedia(video);
         } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
@@ -80,11 +91,15 @@ export default function App() {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [channels, setChannels] = useState([]);
-  const [now, setNow] = useState(null); // { src, type, title }
+  const [now, setNow] = useState(null);
 
   const start = (link, kind, title) => {
     setError('');
-    setNow({ src: relayUrl(link, referer.trim(), kind === 'hls' || kind === 'dash' ? kind : ''), type: kind, title: title || link });
+    setNow({
+      src: relayUrl(link, referer.trim(), kind === 'hls' || kind === 'dash' ? kind : ''),
+      type: kind,
+      title: title || link,
+    });
   };
 
   const submit = async (e) => {
@@ -100,11 +115,12 @@ export default function App() {
     if (kind === 'm3u') {
       setBusy(true);
       try {
-        const r = await fetch(`/api/playlist?url=${encodeURIComponent(link)}${referer.trim() ? `&ref=${encodeURIComponent(referer.trim())}` : ''}`);
-        const data = await r.json();
-        if (!r.ok) throw new Error(data.error || 'Could not load playlist');
+        const r = await fetch(playlistUrl(link, referer.trim()));
+        let data;
+        try { data = await r.json(); } catch { throw new Error(`Server returned ${r.status} (not JSON)`); }
+        if (!r.ok) throw new Error(data.error || `Server returned ${r.status}`);
         if (data.isHls) start(link, 'hls');
-        else if (!data.items.length) setError('No channels found in this playlist.');
+        else if (!data.items?.length) setError('No channels found in this playlist.');
         else setChannels(data.items);
       } catch (err) {
         setError(err.message);
@@ -121,6 +137,7 @@ export default function App() {
       <header>
         <h1>Stream Relay</h1>
         <p>Paste a link. The server fetches it and passes the stream to your player.</p>
+        {API_BASE && <p className="api-base">API: {API_BASE}</p>}
       </header>
 
       <form onSubmit={submit} className="controls">
@@ -167,7 +184,17 @@ export default function App() {
             {channels.map((c, i) => (
               <li key={i}>
                 <button type="button" onClick={() => start(c.url, c.type, c.name)}>
-                  {c.logo ? <img src={c.logo} alt="" loading="lazy" referrerPolicy="no-referrer" onError={(e) => (e.currentTarget.style.visibility = 'hidden')} /> : <span className="ph" />}
+                  {c.logo ? (
+                    <img
+                      src={c.logo}
+                      alt=""
+                      loading="lazy"
+                      referrerPolicy="no-referrer"
+                      onError={(e) => (e.currentTarget.style.visibility = 'hidden')}
+                    />
+                  ) : (
+                    <span className="ph" />
+                  )}
                   <span className="name">{c.name}</span>
                   {c.group && <span className="group">{c.group}</span>}
                 </button>
